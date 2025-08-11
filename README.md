@@ -71,8 +71,8 @@ Create a `.env` file in the project root:
 
 ```bash
 # Robot connection details
-BOSDYN_CLIENT_USERNAME=your_username
-BOSDYN_CLIENT_PASSWORD=your_password
+BOSDYN_CLIENT_USERNAME=your_username  # Replace with your Boston Dynamics client username
+BOSDYN_CLIENT_PASSWORD=your_password  # Replace with your Boston Dynamics client password
 ROBOT_IP=192.168.80.3  # Replace with your robot's IP
 ```
 
@@ -83,13 +83,16 @@ ROBOT_IP=192.168.80.3  # Replace with your robot's IP
 The hello world example demonstrates basic connection and interaction with the Spot robot:
 
 ```bash
-python hello_odense.py --hostname ROBOT_IP --username USERNAME --password PASSWORD
-```
-
-Or if you've set up the environment variables:
-
-```bash
-python hello_odense.py
+# Source the python virtual environment if not already done
+source venv/bin/activate  # On macOS/Linux
+# or
+# venv\Scripts\activate  # On Windows
+cd experiments/hello_odense
+# Install example dependencies if needed
+python3 -m pip install -r requirements.txt 
+python3 hello_odense.py --hostname ROBOT_IP --username USERNAME --password PASSWORD
+# or use environment variables
+python3 hello_odense.py
 ```
 
 ## Running a Spot SDK Example
@@ -100,7 +103,7 @@ To run an example from the Spot SDK, navigate to the `spot-sdk/python/examples` 
 cd spot-sdk/python/examples/hello_spot
 # Install example dependencies if needed
 python3 -m pip install -r requirements.txt
-python hello_spot.py <ROBOT_IP>
+python3 hello_spot.py <ROBOT_IP>
 ```
 
 ## Project Structure
