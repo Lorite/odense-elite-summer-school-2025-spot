@@ -1,6 +1,26 @@
 # Spot SDK Project
 
-This repository uses the Boston Dynamics Spot SDK as a git subrepo to develop applications for the Spot robot.
+This repository is used for the solution to Novo Nordisk's challenge for the 2025 Odense Elite Summer School in Robotics. The idea is to use a Boston Dynamics Spot quadruped robot for object removal.
+
+## Project description
+
+Novo Nordisk is aiming to be at the forefront of innovation, continuously striving to enhance efficiency and safety across our business operations. This challenge addresses a critical need in our company and is relevant to three of our main business areas: Active Pharmaceutical Ingredients (API), Finished Product Manufacturing (FPM), and Aseptic Manufacturing (AM). All these sectors are focused on integrating new robotics and automation technologies to optimize processes and overcome shared challenges. Specifically, this challenge involves the detection and removal of objects during line clearance, to facilitate the movement of operators and mobile robots while ensuring seamless operations. This is particularly important in pharmaceutical manufacturing with strict requirements and standards.
+
+### Challenge
+
+The challenge at hand involves leveraging a Boston Dynamics SPOT robot to identify and effectively remove three distinct objects that may be encountered on the shopfloor within various Novo Nordisk production areas. The first object is a glass cartridge, representing Aseptic Manufacturing (AM), which demands delicate handling due to its fragility. The second involves needle boxes scattered on the floor, requiring a method that balances efficiency with care. Thirdly, a bucket symbolizes Active Pharmaceutical Ingredients (API), which poses unique challenges as it can contain liquids at varying levels and weights. Students are encouraged to use creative and innovative thinking, potentially designing a versatile new gripper capable of handling all three object types. Object detection will play a role as well, offering various approaches from basic to advanced automation, allowing students to explore and decide on the optimal solution for precise and effective object management to clear paths.
+
+### Tools, methods and materials
+
+SPOT Robot with standard gripper, SPOT Robot controller, Objects for removal
+
+### Ideal outcome for the company
+
+The ideal outcome for Novo Nordisk is the development of a versatile solution utilizing SPOT for seamless line clearance that goes beyond the boundaries of just one business area. While SPOT is already being used for different tasks, most of which are anchored in API, achieving a streamlined, adaptable solution applicable to Aseptic Manufacturing and Finished Product Manufacturing would give more opportunities for use cases company-wide. This initiative aims to equip SPOT with capabilities to identify and handle diverse obstacle types, ensuring production continuity and safety while encouraging innovation. Such advancements will not only refine existing processes but also yield insights into approaches that are worth exploring further.
+
+### Source
+
+https://robotelite.sdu.dk/02_novo_b-spot-challenge/
 
 ## Prerequisites
 
