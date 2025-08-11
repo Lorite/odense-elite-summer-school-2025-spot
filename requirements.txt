@@ -1,0 +1,9 @@
+# Boston Dynamics Spot SDK dependencies
+bosdyn-client>=4.1.1
+bosdyn-mission>=4.1.1
+bosdyn-choreography-client>=4.1.1
+
+# Additional useful packages for development
+python-dotenv>=1.0.0  # For loading environment variables from .env file
+numpy>=1.21.0         # Often needed for robotics applications
+opencv-python>=4.5.0  # For computer vision applications
