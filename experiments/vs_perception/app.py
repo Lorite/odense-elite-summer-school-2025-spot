@@ -7,7 +7,7 @@ import copy
 import numpy as np
 import time
 
-from spot import Spot
+from spot import Spot, img_spot_to_opencv, calculate_camera_height
 import object_detection
 import object_pose_estimation
 
@@ -289,7 +289,11 @@ def perception():
 
     t = time.time()
     while True:
-        img, camera_height = spot.get_img_and_camera_height()
+        img_spot = spot.get_spot_img()
+        img = img_spot_to_opencv(img_spot)
+
+        camera_height = calculate_camera_height(
+            spot.get_robot_state_transforms_snapshot(), img_spot.shot.transforms_snapshot)
 
         with gui_output_lock:
             gui_output_copy = copy.deepcopy(gui_output)

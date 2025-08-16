@@ -67,19 +67,16 @@ class Spot():
 
         print("Connection to spot established!")
 
-    def get_img_and_camera_height(self):
+    def get_spot_img(self):
 
         spot_img_request = build_image_request('hand_color_image',
                                                image_format=image_pb2.Image.FORMAT_JPEG,
                                                pixel_format=image_pb2.Image.PIXEL_FORMAT_RGB_U8,
                                                quality_percent=100)
         spot_img = self.image_client.get_image([spot_img_request])[0]
-        img = img_spot_to_opencv(spot_img)
 
-        robot_state_transforms_snapshot = self.robot_state_client.get_robot_state(
+        return spot_img
+
+    def get_robot_state_transforms_snapshot(self):
+        return self.robot_state_client.get_robot_state(
         ).kinematic_state.transforms_snapshot
-        img_transforms_snapshot = spot_img.shot.transforms_snapshot
-        camera_heigt = calculate_camera_height(
-            robot_state_transforms_snapshot, img_transforms_snapshot)
-
-        return img, camera_heigt
