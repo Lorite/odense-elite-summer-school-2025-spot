@@ -1,24 +1,5 @@
-import sys
 import cv2 as cv
 import numpy as np
-
-
-def load_img(path):
-    """
-    Read image from path.
-
-    Args:
-        path: Path to image
-
-    Returns:
-        The image.
-
-    Raises:
-        AssertionError: If image could not be read.
-    """
-    img = cv.imread(path)
-    assert img is not None
-    return img
 
 
 def preprocess_img(img, img_blur):
@@ -90,7 +71,7 @@ def get_mask_largest_component(mask):
     num_labels, labels, stats, centroids = cv.connectedComponentsWithStats(
         mask.astype(np.uint8), connectivity=4)
     if num_labels == 1:
-        return np.zeros(img.shape[:2], dtype=bool)
+        return np.zeros(mask.shape[:2], dtype=bool)
     largest_label = 1 + np.argmax(stats[1:, cv.CC_STAT_AREA])
     return (labels == largest_label).astype(bool)
 
@@ -114,95 +95,17 @@ def get_min_area_rect(mask):
     return rect
 
 
-def draw_line(img, center, angle, color, thickness):
-    """
-    Draws a line across the entire image through center point at the specified angle.
+class DetectObjectResult():
 
-    Args:
-        img: The image to draw on.
-        center: Center point the line should pass through.
-        angle: Angle of the line.
-        color: Color of the line.
-        thickness: Thickness of the line.
-    """
-    theta = np.deg2rad(angle)
-
-    img_h, img_w = img.shape[:2]
-    length = int(np.sqrt(np.pow(img_w, 2) + np.pow(img_h, 2)))
-
-    dx = np.cos(theta)
-    dy = np.sin(theta)
-
-    x1 = int(center[0] - dx * length)
-    y1 = int(center[1] - dy * length)
-    x2 = int(center[0] + dx * length)
-    y2 = int(center[1] + dy * length)
-
-    cv.line(img, (x1, y1), (x2, y2), color, thickness)
+    def __init__(self, img_pp, color_mask, mask_pp, largest_component_mask, rect):
+        self.rect = rect
+        self.img_pp = img_pp
+        self.color_mask = color_mask
+        self.mask_pp = mask_pp
+        self.largest_component_mask = largest_component_mask
 
 
-def draw_rect(img, rect, color=(0, 0, 255), thickness=2):
-    """
-    Draws a rectangle with orientation lines and center point on the image.
-
-    Args:
-        img: The image to draw on.
-        rect: The rectangle. May be None.
-        color: Color of the line.
-        thickness: Thickness of the line.
-    """
-    if rect is None:
-        return
-
-    box = cv.boxPoints(rect)
-    box = np.intp(box)
-    cv.drawContours(img, [box], 0, color, thickness)
-
-    center = tuple(map(int, rect[0]))
-    angle = rect[2]
-    draw_line(img, center, angle, color, thickness)
-    draw_line(img, center, angle+90, color, thickness)
-
-
-def get_bgr_img_from_mask(mask):
-    """
-    Gets BGR image from bool mask.
-
-    Args:
-        mask: The mask. If no boolean mask is provided, the input is returned.
-
-    Returns:
-        The BGR image.
-    """
-
-    if mask.dtype == np.bool_ or mask.dtype == bool:
-        img = (mask.astype(np.uint8)) * 255
-        return cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-    return mask
-
-
-def show_imgs(imgs, rect=None):
-    """
-    Shows multiple images/masks side by side.
-
-    Args:
-        imgs: List of images/masks.
-        rect: Rectangle to draw on all images. May be None
-    """
-    imgs_converted = []
-    for img in imgs:
-        img_converted = get_bgr_img_from_mask(img)
-        draw_rect(img_converted, rect)
-        imgs_converted.append(img_converted)
-    combined = np.hstack(imgs_converted)
-    cv.imshow("", combined)
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-
-
-############################################################################
-
-def detect_object(img, img_blur=1, color_threshold=3.0, mask_opening_radius=1):
+def detect_object(img, img_blur, color_threshold, mask_opening_radius):
     """
     Detects largest object with distinct color from background.
 
@@ -227,26 +130,5 @@ def detect_object(img, img_blur=1, color_threshold=3.0, mask_opening_radius=1):
     mask_pp = postprocess_mask(color_mask, mask_opening_radius)
     largest_component_mask = get_mask_largest_component(mask_pp)
     rect = get_min_area_rect(largest_component_mask)
-    return rect, (img_pp, color_mask, mask_pp, largest_component_mask)
 
-############################################################################
-
-
-if __name__ == '__main__':
-
-    if len(sys.argv) != 5:
-        print("Usage: python detect_object.py <img_path> <img_blur> <color_threshold> <mask_opening_radius>")
-        exit(1)
-
-    img_path = sys.argv[1]
-    img_blur = int(sys.argv[2])
-    color_threshold = float(sys.argv[3])
-    mask_opening_radius = int(sys.argv[4])
-
-    img = load_img(img_path)
-    rect, (img_pp, color_mask, mask_pp, largest_component_mask) = detect_object(
-        img, img_blur, color_threshold, mask_opening_radius)
-
-    print(rect)
-
-    show_imgs([img, img_pp, color_mask, mask_pp, largest_component_mask], rect)
+    return DetectObjectResult(img_pp, color_mask, mask_pp, largest_component_mask, rect)
