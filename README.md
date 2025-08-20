@@ -106,6 +106,19 @@ python3 -m pip install -r requirements.txt
 python3 hello_spot.py <ROBOT_IP>
 ```
 
+## Running Full End-to-End Example
+To run the full end-to-end example, which includes object detection and removal, use the following command:
+
+```bash
+# Source the python virtual environment if not already done
+source venv/bin/activate  # On macOS/Linux
+# or
+# venv\Scripts\activate  # On Windows
+# Install the full e2e example dependencies if needed
+# python3 -m pip install -r requirements.txt
+python -m experiments.full_e2e.full_e2e
+```
+
 ## Project Structure
 
 ```
