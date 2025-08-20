@@ -12,8 +12,8 @@ class ObjectProps:
 OBJECTS: dict[str, ObjectProps] = {
     # Pen
     "pen": ObjectProps(
-        grasp_dist=0.10,
-        dist_to_floor=0.06,
+        grasp_dist=0.2,
+        dist_to_floor=0.05,
         gripper_open_fraction=0.05,
         gripper_max_vel=1.0,
     ),
