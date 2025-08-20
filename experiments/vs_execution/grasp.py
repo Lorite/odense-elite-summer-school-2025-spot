@@ -12,6 +12,7 @@ from bosdyn.client import robot_command
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 
+from object_properties import OBJECTS
 
 SHM_NAME = 'shm_vs'
 
@@ -129,15 +130,32 @@ def vs(z_offset, duration):
     print('VS done!')
 
 
-def grasp():
-    cmd = RobotCommandBuilder.arm_wrench_command(
-        0, 0, -2.5, 0, 0, 0, "flat_body", 3)
+def grasp(dist_to_floor, gripper_open_fraction, gripper_max_vel):
+    # move the arm straight to the floor
+    # Get robot state to compute frames
+    robot_state = robot_state_client.get_robot_state()
+    gpe_T_hand = frame_helpers.get_a_tform_b(
+        robot_state.kinematic_state.transforms_snapshot,
+        frame_helpers.GROUND_PLANE_FRAME_NAME,
+        frame_helpers.HAND_FRAME_NAME
+    )
+    odom_T_gpe = frame_helpers.get_a_tform_b(
+        robot_state.kinematic_state.transforms_snapshot,
+        frame_helpers.ODOM_FRAME_NAME,
+        frame_helpers.GROUND_PLANE_FRAME_NAME
+    )
+    # move the arm closer to the floor
+    gpe_T_hand.z = dist_to_floor
+    new_T = odom_T_gpe*gpe_T_hand
+    cmd = RobotCommandBuilder.arm_pose_command(
+        new_T.x, new_T.y, new_T.z, new_T.rot.w, new_T.rot.x, new_T.rot.y, new_T.rot.z, frame_helpers.ODOM_FRAME_NAME, 3)
     cmd_id = command_client.robot_command(cmd)
-    time.sleep(1)
-    cmd = RobotCommandBuilder.claw_gripper_close_command(max_torque=1.75)
+    robot_command.block_until_arm_arrives(command_client, cmd_id)
+    
+    # close the gripper   
+    cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(gripper_open_fraction, max_vel=gripper_max_vel, disable_force_on_contact=True, max_torque=0.5)
     command_client.robot_command(cmd)
     time.sleep(2)
-
 
 ROBOT_IP = os.getenv("ROBOT_IP")
 
@@ -166,8 +184,21 @@ with bosdyn.client.lease.LeaseKeepAlive(lease_client, must_acquire=True, return_
     setup_robot()
     input('Enter to grasp...')
     print('Grasping...')
-    vs(0.1, 10)
-    grasp()
+
+    # Select object preset from env var; default to cup_upright
+    object_name = os.getenv('OBJECT_NAME', 'cup_upright')
+    props = OBJECTS.get(object_name, OBJECTS['cup_upright'])
+    print(f"Using object preset: {object_name} -> {props}")
+
+    # Visual servoing offset and duration
+    vs(props.grasp_dist, 10)
+
+    # Use preset properties
+    dist_to_floor = props.dist_to_floor
+    gripper_open_fraction = props.gripper_open_fraction
+    gripper_max_vel = props.gripper_max_vel
+
+    grasp(dist_to_floor, gripper_open_fraction, gripper_max_vel)
     print('Grasping done')
     carry()
     power_off()
