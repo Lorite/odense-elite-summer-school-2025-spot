@@ -1,31 +1,19 @@
 import os
 import tempfile
-import time
 import struct
 import mmap
 
+import util
 import spot
 import object_detection
 import object_pose_estimation
 
 
+ROLLING_MEDIAN_NUM_VALUES = 5
+
+
 MMAP_FILENAME = os.path.join(tempfile.gettempdir(), "mmap_vs.bin")
 MMAP_SIZE = 32
-
-
-class FPSMeasurement():
-    def __init__(self):
-        self.t = time.time()
-        self.fps = None
-
-    def frame(self):
-        t_new = time.time()
-        t_diff = t_new - self.t
-        self.fps = 1.0 / t_diff
-        self.t = t_new
-
-    def get_fps(self):
-        return self.fps
 
 
 class PerceptionParameters():
@@ -52,14 +40,18 @@ def perception(stop_event, get_params_callback, update_out_callback):
 
     with open(MMAP_FILENAME, 'wb') as f:
         f.write(b"\x00" * MMAP_SIZE)
-
     with open(MMAP_FILENAME, 'r+b') as f:
         shm = mmap.mmap(f.fileno(), MMAP_SIZE, access=mmap.ACCESS_WRITE)
 
         try:
             robot = spot.Spot()
 
-            fps = FPSMeasurement()
+            fps = util.FPSMeasurement()
+            flat_body_T_obj_median = util.RunningMedianTuple(
+                ROLLING_MEDIAN_NUM_VALUES, 3)
+            flat_body_yaw_obj_median = util.RunningMedian(
+                ROLLING_MEDIAN_NUM_VALUES)
+
             while not stop_event.is_set():
 
                 img_spot = robot.get_img_spot()
@@ -91,8 +83,11 @@ def perception(stop_event, get_params_callback, update_out_callback):
                         detect_object_result.rect)
                     flat_body_yaw_obj = flat_body_yaw_camera + camera_yaw_obj
 
+                    flat_body_T_obj_median.add_value(flat_body_T_obj)
+                    flat_body_yaw_obj_median.add_value(flat_body_yaw_obj)
+
                     shm[:MMAP_SIZE] = struct.pack(
-                        'dddd', *flat_body_T_obj, flat_body_yaw_obj)
+                        'dddd', *flat_body_T_obj_median.get(), flat_body_yaw_obj_median.get())
 
                 else:
                     camera_T_obj = None
