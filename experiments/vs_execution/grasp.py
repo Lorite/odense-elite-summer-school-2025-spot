@@ -19,6 +19,11 @@ from experiments.experiments_helpers.object_properties import OBJECTS
 MMAP_FILENAME = os.path.join(tempfile.gettempdir(), "mmap_vs.bin")
 MMAP_SIZE = 32
 
+CAMERA_Q_HAND = geometry_pb2.Quaternion(
+    w=0.5377, x=0.4592, y=-0.4592, z=0.5377)
+CAMERA_TFORM_HAND = math_helpers.SE3Pose(x=0.020, y=0.033, z=0.053,
+                                         rot=CAMERA_Q_HAND)
+
 
 try:
     from dotenv import load_dotenv
@@ -29,24 +34,26 @@ except ImportError:
 
 
 def Q_down(yaw):
-    half_y = math.radians(90) / 2.0
-    qy = (math.cos(half_y), 0.0, math.sin(half_y), 0.0)
+    w1, x1, y1, z1 = 0, -math.sqrt(2)/2, math.sqrt(2)/2, 0
+    theta = math.radians(-yaw)
+    w2 = math.cos(theta/2)
+    x2 = 0
+    y2 = 0
+    z2 = math.sin(theta/2)
+    w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+    x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+    y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+    z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+    return geometry_pb2.Quaternion(w=w, x=x, y=y, z=z)
 
-    half_z = math.radians(yaw) / 2.0
-    qz = (math.cos(half_z), 0.0, 0.0, math.sin(half_z))
 
-    qw = qz[0]*qy[0] - qz[1]*qy[1] - qz[2]*qy[2] - qz[3]*qy[3]
-    qx = qz[0]*qy[1] + qz[1]*qy[0] + qz[2]*qy[3] - qz[3]*qy[2]
-    qy_ = qz[0]*qy[2] - qz[1]*qy[3] + qz[2]*qy[0] + qz[3]*qy[1]
-    qz_ = qz[0]*qy[3] + qz[1]*qy[2] - qz[2]*qy[1] + qz[3]*qy[0]
-    return geometry_pb2.Quaternion(w=qw, x=qx, y=qy_, z=qz_)
+def arm_pose_cmd_flat_body_T_yaw_camera(x, y, z, yaw, duration):
+    flat_body_Q_camera = Q_down(yaw)
+    flat_body_tform_camera = math_helpers.SE3Pose(x=x, y=y, z=z,
+                                                  rot=flat_body_Q_camera)
 
-
-def arm_pose_cmd_flat_body_T_yaw_hand(x, y, z, yaw, duration):
-    flat_body_T_hand = geometry_pb2.Vec3(x=x, y=y, z=z)
-    flat_body_Q_hand = Q_down(yaw)
-    flat_body_tform_hand = geometry_pb2.SE3Pose(position=flat_body_T_hand,
-                                                rotation=flat_body_Q_hand)
+    flat_body_tform_hand = flat_body_tform_camera * CAMERA_TFORM_HAND
+    flat_body_tform_hand = flat_body_tform_hand.to_proto()
 
     transforms_snapshot = robot_state_client.get_robot_state(
     ).kinematic_state.transforms_snapshot
@@ -70,7 +77,7 @@ def arm_pose_cmd_flat_body_T_yaw_hand(x, y, z, yaw, duration):
 
 
 def init_arm_gripper_cmd():
-    arm_cmd = arm_pose_cmd_flat_body_T_yaw_hand(0.75, 0, 0.25, 0, 2)
+    arm_cmd = arm_pose_cmd_flat_body_T_yaw_camera(0.75, 0, 0.25, 0, 2)
     gripper_cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(
         1.0)
     cmd = RobotCommandBuilder.build_synchro_command(
@@ -123,7 +130,7 @@ def vs(z_offset, duration):
         x, y, z, yaw = struct.unpack('dddd', shm[:32])
         z += z_offset
 
-        cmd = arm_pose_cmd_flat_body_T_yaw_hand(
+        cmd = arm_pose_cmd_flat_body_T_yaw_camera(
             x, y, z, yaw, duration - (t_now - t_start))
         cmd_id = command_client.robot_command(cmd)
 
