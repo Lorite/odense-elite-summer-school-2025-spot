@@ -13,7 +13,7 @@ from bosdyn.client import robot_command
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 
-from object_properties import OBJECTS
+from experiments.experiments_helpers.object_properties import OBJECTS
 
 
 MMAP_FILENAME = os.path.join(tempfile.gettempdir(), "mmap_vs.bin")

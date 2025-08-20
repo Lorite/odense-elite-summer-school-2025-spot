@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Boston Dynamics, Inc.
-# Integrated body-camera click → hand-camera centering → grasp script.
+# RUN WITH `python -m experiments.full_e2e.full_e2e`
 
 import argparse
 import sys
@@ -7,6 +6,11 @@ import time
 import cv2
 import numpy as np
 import os
+import math
+import struct
+from types import SimpleNamespace
+import tempfile
+import mmap
 
 import bosdyn.client
 import bosdyn.client.estop
@@ -25,6 +29,8 @@ from bosdyn.client import frame_helpers
 from bosdyn.client import math_helpers
 # already imported above, also add this constant for readability:
 GAB_FRAME_NAME = frame_helpers.GRAV_ALIGNED_BODY_FRAME_NAME
+
+from experiments.experiments_helpers.object_properties import OBJECTS
 
 
 g_image_click = None
@@ -394,6 +400,133 @@ def execute_pick_sequence(command_client, state_client, xyz_vision, down_offset)
     carry(command_client)
 
 
+def carry(command_client):
+    print("Moving arm into carrying position...")
+    cmd = RobotCommandBuilder.arm_carry_command()
+    cmd_id = command_client.robot_command(cmd)
+    block_until_arm_arrives(command_client, cmd_id)
+    print("Arm in carrying position!")
+
+
+def Q_down(yaw_deg: float):
+    """Quaternion to point gripper +X down (about -Z) with yaw about Z."""
+    half_y = math.radians(90.0) / 2.0
+    qy = (math.cos(half_y), 0.0, math.sin(half_y), 0.0)
+
+    half_z = math.radians(float(yaw_deg)) / 2.0
+    qz = (math.cos(half_z), 0.0, 0.0, math.sin(half_z))
+
+    qw = qz[0] * qy[0] - qz[1] * qy[1] - qz[2] * qy[2] - qz[3] * qy[3]
+    qx = qz[0] * qy[1] + qz[1] * qy[0] + qz[2] * qy[3] - qz[3] * qy[2]
+    qy_ = qz[0] * qy[2] - qz[1] * qy[3] + qz[2] * qy[0] + qz[3] * qy[1]
+    qz_ = qz[0] * qy[3] + qz[1] * qy[2] - qz[2] * qy[1] + qz[3] * qy[0]
+    return geometry_pb2.Quaternion(w=qw, x=qx, y=qy_, z=qz_)
+
+
+def arm_pose_cmd_flat_body_T_yaw_hand(x: float, y: float, z: float, yaw_deg: float, duration: float,
+                                       state_client: RobotStateClient):
+    """Build an arm pose command where input pose is in GRAV_ALIGNED_BODY ('flat_body') frame.
+    Converted to ODOM frame for commanding, matching grasp.py behavior.
+    """
+    flat_body_T_hand = geometry_pb2.Vec3(x=float(x), y=float(y), z=float(z))
+    flat_body_Q_hand = Q_down(yaw_deg)
+    flat_body_tform_hand = geometry_pb2.SE3Pose(position=flat_body_T_hand, rotation=flat_body_Q_hand)
+
+    transforms_snapshot = state_client.get_robot_state().kinematic_state.transforms_snapshot
+    odom_tform_flat_body = frame_helpers.get_a_tform_b(
+        transforms_snapshot, frame_helpers.ODOM_FRAME_NAME, frame_helpers.GRAV_ALIGNED_BODY_FRAME_NAME
+    )
+    odom_tform_hand = odom_tform_flat_body * math_helpers.SE3Pose.from_proto(flat_body_tform_hand)
+
+    return RobotCommandBuilder.arm_pose_command(
+        odom_tform_hand.x,
+        odom_tform_hand.y,
+        odom_tform_hand.z,
+        odom_tform_hand.rot.w,
+        odom_tform_hand.rot.x,
+        odom_tform_hand.rot.y,
+        odom_tform_hand.rot.z,
+        frame_helpers.ODOM_FRAME_NAME,
+        float(duration),
+    )
+    
+    
+def visual_servo(z_offset: float, duration: float, command_client: RobotCommandClient,
+                 state_client: RobotStateClient, nmap_filename: str = os.path.join(tempfile.gettempdir(), "mmap_vs.bin"), nmap_size: int = 32):
+    """Read (x,y,z,yaw) as 4 float64 from shared memory and continuously send arm pose cmds.
+    z is offset by z_offset to hover during VS.
+    """
+    print('VS...')
+    try:
+        with open(nmap_filename, 'r+b') as f:
+            shm = mmap.mmap(f.fileno(), nmap_size, access=mmap.ACCESS_READ)
+    except Exception as e:
+        raise RuntimeError(f"Shared memory not found: {e}")
+    
+
+    t_start = time.time()
+    t_now = t_start
+    last_cmd_id = None
+
+    while (t_now - t_start) < (float(duration) - 0.2):
+        try:
+            x, y, z, yaw = struct.unpack('dddd', shm[:32])
+        except Exception:
+            # If buffer not ready, skip this tick
+            t_now = time.time()
+            continue
+
+        z_cmd = float(z) + float(z_offset)
+        cmd = arm_pose_cmd_flat_body_T_yaw_hand(x, y, z_cmd, yaw, max(0.2, float(duration) - (t_now - t_start)), state_client)
+        last_cmd_id = command_client.robot_command(cmd)
+
+        t_now = time.time()
+
+    if last_cmd_id is not None:
+        block_until_arm_arrives(command_client, last_cmd_id)
+    print('VS done!')
+
+
+def grasp_to_floor(command_client: RobotCommandClient, state_client: RobotStateClient,
+                   dist_to_floor: float, gripper_open_fraction: float, gripper_max_vel: float):
+    """Move hand straight down to dist_to_floor in ground plane frame, then set gripper open fraction."""
+    robot_state = state_client.get_robot_state()
+    gpe_T_hand = frame_helpers.get_a_tform_b(
+        robot_state.kinematic_state.transforms_snapshot,
+        frame_helpers.GROUND_PLANE_FRAME_NAME,
+        frame_helpers.HAND_FRAME_NAME,
+    )
+    odom_T_gpe = frame_helpers.get_a_tform_b(
+        robot_state.kinematic_state.transforms_snapshot,
+        frame_helpers.ODOM_FRAME_NAME,
+        frame_helpers.GROUND_PLANE_FRAME_NAME,
+    )
+
+    # Lower to target height in ground plane
+    gpe_T_hand.z = float(dist_to_floor)
+    new_T = odom_T_gpe * gpe_T_hand
+    cmd = RobotCommandBuilder.arm_pose_command(
+        new_T.x, new_T.y, new_T.z,
+        new_T.rot.w, new_T.rot.x, new_T.rot.y, new_T.rot.z,
+        frame_helpers.ODOM_FRAME_NAME, 3.0,
+    )
+    cmd_id = command_client.robot_command(cmd)
+    block_until_arm_arrives(command_client, cmd_id)
+
+    # Close to target open fraction (disable force on contact like in grasp.py)
+    cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(
+        float(gripper_open_fraction), max_vel=float(gripper_max_vel), disable_force_on_contact=True, max_torque=0.5
+    )
+    command_client.robot_command(cmd)
+    time.sleep(2.0)
+
+
+def execute_vs_grasp(command_client, state_client, props, vs_duration: float):
+    """Run VS hover and floor grasp using provided object preset props, then carry."""
+    visual_servo(props.grasp_dist, vs_duration, command_client, state_client)
+    grasp_to_floor(command_client, state_client, props.dist_to_floor, props.gripper_open_fraction, props.gripper_max_vel)
+       
+
 def arm_object_grasp_with_centering(config):
     robot, lease_client, image_client, manipulation_api_client, command_client, state_client = setup_robot_and_clients(config)
 
@@ -412,23 +545,54 @@ def arm_object_grasp_with_centering(config):
                     )
 
                     try:
-                        execute_pick_sequence(
-                            command_client, state_client, xyz_vision, down_offset=config.down_offset
+                        # open gripper
+                        command_client.robot_command(
+                            RobotCommandBuilder.claw_gripper_open_fraction_command(1.0)
                         )
+                        if getattr(config, 'use_vs', False):
+                            # Optional coarse move above clicked point before VS
+                            try:
+                                cmd_id = move_hand_to_point_with_gravity_offset(
+                                    command_client,
+                                    state_client=state_client,
+                                    xyz_vision=xyz_vision,
+                                    down_offset_m=config.down_offset,
+                                    seconds=2.0,
+                                )
+                                block_until_arm_arrives(command_client, cmd_id)
+                            except Exception as e:
+                                print(f"[Warn] Pre-VS coarse move failed: {e}")
+                            # Resolve object preset and run VS + floor grasp
+                            try:
+                                object_name = os.getenv('OBJECT_NAME', 'cup_upright')
+                                props = OBJECTS.get(object_name, OBJECTS['cup_upright'])
+                                print(f"Using object preset: {object_name} -> {props}")
+                            except Exception as e:
+                                print(f"Exception. Couldn't get object from environment variable. {e}")                                      
+                                props = OBJECTS['cup_upright']
+                            execute_vs_grasp(
+                                command_client,
+                                state_client,
+                                props,
+                                float(getattr(config, 'vs_duration', 1)),
+                            )
+                        else:
+                            execute_pick_sequence(
+                                command_client, state_client, xyz_vision, down_offset=config.down_offset
+                            )
+                        
+                        carry(command_client)
+                        input("Press a button to release the object")
+                        command_client.robot_command(
+                            RobotCommandBuilder.claw_gripper_open_fraction_command(1.0)
+                        )
+                        
                     except Exception as e:
                         print(f"[Warn] Arm move failed: {e}")
                 except Exception as e:
                     print(f"[Warn] Could not compute 3D for click: {e}")
         except KeyboardInterrupt:
             print("\nStopping click-to-3D test (keyboard interrupt).")
-
-
-def carry(command_client):
-    print("Moving arm into carrying position...")
-    cmd = RobotCommandBuilder.arm_carry_command()
-    cmd_id = command_client.robot_command(cmd)
-    block_until_arm_arrives(command_client, cmd_id)
-    print("Arm in carrying position!")
 
 
 def power_off(robot):
@@ -486,6 +650,16 @@ def main():
                         help='### NEW: Number of depth frames to temporally sample per click (median). 1 = no extra wait.')
     parser.add_argument('--down-offset', type=float, default=0.30,
                         help='Vertical (gravity) offset h in meters. Target Z becomes z + h in GRAV_ALIGNED_BODY.')
+
+    # Added: VS/grasp options
+    parser.add_argument('--use-vs', dest='use_vs', action='store_true', default=True,
+                        help='Enable shared-memory visual servoing + floor grasp sequence (default).')
+    parser.add_argument('--no-use-vs', dest='use_vs', action='store_false',
+                        help='Disable shared-memory visual servoing + floor grasp sequence.')
+    parser.add_argument('--vs-duration', type=float, default=2.0,
+                        help='VS duration in seconds.')
+    parser.add_argument('--shm-name', default='shm_vs',
+                        help='Shared memory segment name providing (x,y,z,yaw) as four float64 values.')
 
     # Inject hostname from .env if not provided on CLI to satisfy required arg
     ensure_hostname_cli_arg()
