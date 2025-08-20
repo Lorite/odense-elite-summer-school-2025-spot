@@ -1,8 +1,9 @@
 import os
+import tempfile
 import math
 import time
 import struct
-from multiprocessing import shared_memory
+import mmap
 
 from bosdyn.api import geometry_pb2
 import bosdyn.client
@@ -14,7 +15,9 @@ from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 
 from object_properties import OBJECTS
 
-SHM_NAME = 'shm_vs'
+
+MMAP_FILENAME = os.path.join(tempfile.gettempdir(), "mmap_vs.bin")
+MMAP_SIZE = 32
 
 
 try:
@@ -117,7 +120,7 @@ def vs(z_offset, duration):
 
     while t_now - t_start < (duration - 0.2):
 
-        x, y, z, yaw = struct.unpack('dddd', buffer[:32])
+        x, y, z, yaw = struct.unpack('dddd', shm[:32])
         z += z_offset
 
         cmd = arm_pose_cmd_flat_body_T_yaw_hand(
@@ -151,11 +154,13 @@ def grasp(dist_to_floor, gripper_open_fraction, gripper_max_vel):
         new_T.x, new_T.y, new_T.z, new_T.rot.w, new_T.rot.x, new_T.rot.y, new_T.rot.z, frame_helpers.ODOM_FRAME_NAME, 3)
     cmd_id = command_client.robot_command(cmd)
     robot_command.block_until_arm_arrives(command_client, cmd_id)
-    
-    # close the gripper   
-    cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(gripper_open_fraction, max_vel=gripper_max_vel, disable_force_on_contact=True, max_torque=0.5)
+
+    # close the gripper
+    cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(
+        gripper_open_fraction, max_vel=gripper_max_vel, disable_force_on_contact=True, max_torque=0.5)
     command_client.robot_command(cmd)
     time.sleep(2)
+
 
 ROBOT_IP = os.getenv("ROBOT_IP")
 
@@ -176,8 +181,8 @@ lease_client = robot.ensure_client(
     bosdyn.client.lease.LeaseClient.default_service_name)
 
 
-shm = shared_memory.SharedMemory(name=SHM_NAME)
-buffer = shm.buf
+with open(MMAP_FILENAME, 'r+b') as f:
+    shm = mmap.mmap(f.fileno(), MMAP_SIZE, access=mmap.ACCESS_READ)
 
 
 with bosdyn.client.lease.LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True):

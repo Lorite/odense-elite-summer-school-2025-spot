@@ -1,13 +1,16 @@
+import os
+import tempfile
 import time
 import struct
-from multiprocessing import shared_memory
+import mmap
 
 import spot
 import object_detection
 import object_pose_estimation
 
 
-SHM_NAME = 'shm_vs'
+MMAP_FILENAME = os.path.join(tempfile.gettempdir(), "mmap_vs.bin")
+MMAP_SIZE = 32
 
 
 class FPSMeasurement():
@@ -47,64 +50,66 @@ class PerceptionOutput():
 
 def perception(stop_event, get_params_callback, update_out_callback):
 
-    shm = shared_memory.SharedMemory(
-        create=True, size=struct.calcsize('dddd'), name=SHM_NAME)
-    buffer = shm.buf
+    with open(MMAP_FILENAME, 'wb') as f:
+        f.write(b"\x00" * MMAP_SIZE)
 
-    try:
-        robot = spot.Spot()
+    with open(MMAP_FILENAME, 'r+b') as f:
+        shm = mmap.mmap(f.fileno(), MMAP_SIZE, access=mmap.ACCESS_WRITE)
 
-        fps = FPSMeasurement()
-        while not stop_event.is_set():
+        try:
+            robot = spot.Spot()
 
-            img_spot = robot.get_img_spot()
-            img = spot.img_spot_to_opencv(img_spot)
+            fps = FPSMeasurement()
+            while not stop_event.is_set():
 
-            robot_state_transforms_snapshot = robot.get_robot_state_transforms_snapshot()
-            img_transforms_snapshot = img_spot.shot.transforms_snapshot
-            gpe_tform_camera = spot.gpe_tform_camera(
-                robot_state_transforms_snapshot, img_transforms_snapshot)
-            camera_height = spot.camera_height(gpe_tform_camera)
+                img_spot = robot.get_img_spot()
+                img = spot.img_spot_to_opencv(img_spot)
 
-            params = get_params_callback()
-
-            detect_object_result = object_detection.detect_object(
-                img, params.img_blur, params.color_threshold, params.mask_opening_radius)
-
-            if detect_object_result.rect is not None:
-
-                camera_T_obj = object_pose_estimation.camera_T_obj(
-                    detect_object_result.rect[0], camera_height)
-                gpe_T_obj = gpe_tform_camera.transform_point(*camera_T_obj)
-                gpe_T_obj = (gpe_T_obj[0], gpe_T_obj[1], 0)
-                flat_body_T_obj = spot.flat_body_tform_gpe(
-                    robot_state_transforms_snapshot).transform_point(*gpe_T_obj)
-
-                flat_body_yaw_camera = spot.flat_body_yaw_camera(
+                robot_state_transforms_snapshot = robot.get_robot_state_transforms_snapshot()
+                img_transforms_snapshot = img_spot.shot.transforms_snapshot
+                gpe_tform_camera = spot.gpe_tform_camera(
                     robot_state_transforms_snapshot, img_transforms_snapshot)
-                camera_yaw_obj = object_pose_estimation.camera_yaw_obj(
-                    detect_object_result.rect)
-                flat_body_yaw_obj = flat_body_yaw_camera + camera_yaw_obj
+                camera_height = spot.camera_height(gpe_tform_camera)
 
-                buffer[:32] = struct.pack(
-                    'dddd', *flat_body_T_obj, flat_body_yaw_obj)
+                params = get_params_callback()
 
-            else:
-                camera_T_obj = None
-                camera_yaw_obj = None
+                detect_object_result = object_detection.detect_object(
+                    img, params.img_blur, params.color_threshold, params.mask_opening_radius)
 
-            fps.frame()
-            output = PerceptionOutput(img,
-                                      detect_object_result.img_pp,
-                                      detect_object_result.color_mask,
-                                      detect_object_result.mask_pp,
-                                      detect_object_result.largest_component_mask,
-                                      detect_object_result.rect,
-                                      camera_T_obj,
-                                      camera_yaw_obj,
-                                      fps.get_fps())
-            update_out_callback(output)
+                if detect_object_result.rect is not None:
 
-    finally:
-        shm.close()
-        shm.unlink()
+                    camera_T_obj = object_pose_estimation.camera_T_obj(
+                        detect_object_result.rect[0], camera_height)
+                    gpe_T_obj = gpe_tform_camera.transform_point(*camera_T_obj)
+                    gpe_T_obj = (gpe_T_obj[0], gpe_T_obj[1], 0)
+                    flat_body_T_obj = spot.flat_body_tform_gpe(
+                        robot_state_transforms_snapshot).transform_point(*gpe_T_obj)
+
+                    flat_body_yaw_camera = spot.flat_body_yaw_camera(
+                        robot_state_transforms_snapshot, img_transforms_snapshot)
+                    camera_yaw_obj = object_pose_estimation.camera_yaw_obj(
+                        detect_object_result.rect)
+                    flat_body_yaw_obj = flat_body_yaw_camera + camera_yaw_obj
+
+                    shm[:MMAP_SIZE] = struct.pack(
+                        'dddd', *flat_body_T_obj, flat_body_yaw_obj)
+
+                else:
+                    camera_T_obj = None
+                    camera_yaw_obj = None
+
+                fps.frame()
+                output = PerceptionOutput(img,
+                                          detect_object_result.img_pp,
+                                          detect_object_result.color_mask,
+                                          detect_object_result.mask_pp,
+                                          detect_object_result.largest_component_mask,
+                                          detect_object_result.rect,
+                                          camera_T_obj,
+                                          camera_yaw_obj,
+                                          fps.get_fps())
+                update_out_callback(output)
+
+        finally:
+            shm.close()
+            os.remove(MMAP_FILENAME)
