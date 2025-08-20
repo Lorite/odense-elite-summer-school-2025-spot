@@ -1,10 +1,11 @@
 # Copyright (c) 2023 Boston Dynamics, Inc.
-# Dual front-camera click → compute 3D (from cached aligned depth) → arm sequence
+# Dual front-camera click → compute 3D (from cached aligned depth) → walk-if-far → grasp sequence
 # with an interactive object selector (Cup/Box/Pen) that adjusts grasp parameters.
 
 import argparse
 import sys
 import time
+import math
 import cv2
 import numpy as np
 
@@ -20,9 +21,10 @@ from bosdyn.client.manipulation_api_client import ManipulationApiClient
 from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient
 
+from bosdyn.client import frame_helpers, math_helpers
 from bosdyn.client import image as bd_image
-from bosdyn.client import frame_helpers
-from bosdyn.client import math_helpers
+from google.protobuf import wrappers_pb2
+
 
 # Gravity-aligned frame (Z up)
 GAB_FRAME_NAME = frame_helpers.GRAV_ALIGNED_BODY_FRAME_NAME
@@ -63,6 +65,58 @@ def cv_mouse_callback_dual(event, x, y, flags, param):
         cv2.line(clone, (x, 0), (x, h), color, thickness)
         win_name = "Front Left" if param == 'left' else "Front Right"
         cv2.imshow(win_name, clone)
+
+def walk_to_object_in_image(manip_client, image_resp, uv, standoff_m: float):
+    """
+    Use Manipulation API WalkToObjectInImage with the clicked pixel from the *chosen* camera.
+    - manip_client: ManipulationApiClient
+    - image_resp:   the ImageResponse for the camera the user clicked on (left or right)
+    - uv:           (u, v) pixel *within that camera's image*
+    - standoff_m:   how far to stop from the object
+    """
+    from bosdyn.api import geometry_pb2, manipulation_api_pb2
+    u, v = int(uv[0]), int(uv[1])
+    walk_vec = geometry_pb2.Vec2(x=u, y=v)
+    walk_to = manipulation_api_pb2.WalkToObjectInImage(
+        pixel_xy=walk_vec,
+        transforms_snapshot_for_camera=image_resp.shot.transforms_snapshot,
+        frame_name_image_sensor=image_resp.shot.frame_name_image_sensor,
+        camera_model=image_resp.source.pinhole,
+        offset_distance=wrappers_pb2.FloatValue(value=float(standoff_m)),
+    )
+    req = manipulation_api_pb2.ManipulationApiRequest(walk_to_object_in_image=walk_to)
+    return manip_client.manipulation_api_command(req).manipulation_cmd_id
+
+
+def wait_until_walk_finishes(manip_client, cmd_id, timeout_s=45.0):
+    """Poll Manipulation API feedback until the state is no longer a walking state."""
+    import time
+    from bosdyn.api import manipulation_api_pb2
+
+    walking_states = {
+        # include the variants that appear across SDKs; unknown ones will just print and be treated as walking
+        "MANIP_STATE_WALKING_TO_OBJECT",
+        "MANIP_STATE_WALKING_TO_OBJECT_GOING",
+        "MANIP_STATE_WALKING_TO_OBJECT_APPROACH",
+    }
+
+    t0 = time.time()
+    while True:
+        fb = manip_client.manipulation_api_feedback_command(
+            manipulation_api_pb2.ManipulationApiFeedbackRequest(manipulation_cmd_id=cmd_id)
+        )
+        state_name = manipulation_api_pb2.ManipulationFeedbackState.Name(fb.current_state)
+        print(f"[WalkTo] State: {state_name}")
+
+        # Break as soon as we're not in any walking state (covers SDKs without *_DONE)
+        if state_name not in walking_states:
+            return fb
+
+        if time.time() - t0 > timeout_s:
+            print("[WalkTo] Timeout waiting for walk; continuing.")
+            return fb
+
+        time.sleep(0.25)
 
 
 def _infer_depth_source(visual_source: str) -> str:
@@ -284,6 +338,89 @@ def median_depth_at_uv(image_client, depth_source, u, v, first_depth_resp, first
     return depth_m
 
 
+def _valid_depth_raw_mask(D):
+    """Return a boolean mask of valid raw depth values."""
+    return (D != 0) & (D != 65535)
+
+def _gather_window_raw(depth_img, u, v, win=10):
+    """Collect valid raw depth values from a win×win window centered at (u,v)."""
+    h, w = depth_img.shape[:2]
+    r = max(1, int(win) // 2)
+    u0, u1 = max(0, u - r), min(w, u + r + 1)
+    v0, v1 = max(0, v - r), min(h, v + r + 1)
+    patch = depth_img[v0:v1, u0:u1]
+    mask = _valid_depth_raw_mask(patch)
+    vals = patch[mask].astype(np.float32)
+    return vals  # 1D array of raw uint16 depths (valid only)
+
+def _kmeans1d(vals, k=2, iters=15):
+    """Tiny 1D k-means for clustering raw depth. Returns (labels, centers)."""
+    if vals.size < k:
+        # not enough points to cluster; put everything in one cluster
+        return np.zeros_like(vals, dtype=np.int32), np.array([np.mean(vals)], dtype=np.float32)
+    # init centers at percentiles
+    qs = np.linspace(0, 100, k + 2)[1:-1]
+    centers = np.percentile(vals, qs).astype(np.float32)
+    for _ in range(iters):
+        # assign
+        d = np.abs(vals[:, None] - centers[None, :])
+        labels = np.argmin(d, axis=1)
+        # recompute
+        new_centers = centers.copy()
+        for ci in range(k):
+            m = (labels == ci)
+            if np.any(m):
+                new_centers[ci] = np.mean(vals[m])
+        if np.allclose(new_centers, centers):
+            break
+        centers = new_centers
+    return labels, centers
+
+def clustered_depth_at_uv_window(image_client, depth_source, u, v,
+                                 first_depth_resp, first_depth_img,
+                                 window=10, samples=1, delay_s=0.0):
+    """
+    Collect raw depths from a window around (u,v) across `samples` frames, cluster (k=2),
+    and return the mean of the dominant cluster, converted to meters.
+    - Uses the cached (synced) depth image for the first sample.
+    """
+    raws = []
+
+    # sample 0: cached
+    vals0 = _gather_window_raw(first_depth_img, u, v, win=window)
+    if vals0.size:
+        raws.append(vals0)
+
+    # additional samples (if requested)
+    for _ in range(max(0, int(samples) - 1)):
+        d_resp = image_client.get_image_from_sources([depth_source])[0]
+        d_img = _decode_depth_to_numpy(d_resp)
+        vals = _gather_window_raw(d_img, u, v, win=window)
+        if vals.size:
+            raws.append(vals)
+        if delay_s > 0.0:
+            time.sleep(delay_s)
+
+    if not raws:
+        raise ValueError(f"No valid depth in {window}x{window} window at ({u},{v}) across {samples} sample(s).")
+
+    all_raw = np.concatenate(raws, axis=0)
+
+    # cluster raw depths (1D k-means, k=2)
+    labels, centers = _kmeans1d(all_raw, k=2, iters=15)
+    # pick the dominant cluster (most points). If only 1 center, handle gracefully.
+    if centers.size == 1:
+        cluster_mean_raw = float(centers[0])
+    else:
+        counts = np.bincount(labels, minlength=2)
+        dominant = int(np.argmax(counts))
+        cluster_mean_raw = float(np.mean(all_raw[labels == dominant]))
+
+    depth_scale = getattr(first_depth_resp.source, 'depth_scale', 1000.0)  # raw units → meters
+    depth_m = cluster_mean_raw / float(depth_scale)
+    return depth_m, int(all_raw.size)
+
+
 # --------------------------
 # Grasp profiles (C/B/P)
 # --------------------------
@@ -291,7 +428,7 @@ GRASP_PROFILES = {
     # Hover safely higher, close gently (leave some opening)
     "C": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.03, "close_fraction": 0.5, "close_torque": 0.01},
     # Standard box: moderate hover, standard contact, full close
-    "B": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.4, "close_torque": 0.01},
+    "B": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.4, "close_torque": 0.1},
     # Slim pen: hover modestly, contact very close, full close, but you may need lower torque
     "P": {"name": "pen", "hover_offset": 0.20, "contact_offset": 0.008, "close_fraction": 0.0, "close_torque": 5.0},
 }
@@ -310,6 +447,29 @@ def ask_object_profile():
                   f"close_fraction={prof['close_fraction']}, torque={prof['close_torque']})")
             return prof
         print("Please type C, B, or P.")
+
+
+# -------------- Walking helpers --------------
+def _vision_point_to_gab_xy(state_client, xyz_vision):
+    """Transform a VISION-frame 3D point to GRAV_ALIGNED_BODY XY (planar)."""
+    snapshot_full = state_client.get_robot_state().kinematic_state.transforms_snapshot
+    T_gab_vision = frame_helpers.get_a_tform_b(snapshot_full, GAB_FRAME_NAME, VISION_FRAME_NAME)
+    if T_gab_vision is None:
+        # Fallback to BODY if GAB missing (rare)
+        T_gab_vision = frame_helpers.get_a_tform_b(snapshot_full, frame_helpers.BODY_FRAME_NAME, VISION_FRAME_NAME)
+        root = frame_helpers.BODY_FRAME_NAME
+    else:
+        root = GAB_FRAME_NAME
+    x_v, y_v, z_v = map(float, xyz_vision)
+    x_g, y_g, z_g = T_gab_vision.transform_point(x_v, y_v, z_v)
+    return (x_g, y_g, z_g), root
+
+
+def _planar_distance_and_heading(x_g, y_g):
+    """Distance and yaw to point in GAB XY plane (from origin)."""
+    dist = math.hypot(x_g, y_g)
+    yaw = math.atan2(y_g, x_g)  # face the point
+    return dist, yaw
 
 
 def arm_object_grasp_with_centering(config):
@@ -356,15 +516,17 @@ def arm_object_grasp_with_centering(config):
 
                 try:
                     depth_source = _infer_depth_source(visual_source)
-                    depth_m = median_depth_at_uv(
+                    depth_m, n_used = clustered_depth_at_uv_window(
                         image_client=image_client,
                         depth_source=depth_source,
                         u=u, v=v,
                         first_depth_resp=depth_resp,
                         first_depth_img=depth_img,
-                        samples=max(1, int(config.depth_samples)),
+                        window=getattr(config, "depth_window", 10),  # default 10×10
+                        samples=max(1, int(config.depth_samples)),  # temporal samples
                         delay_s=0.0
                     )
+                    print(f"[Depth] windowed-clustered depth used {n_used} samples (raw px).")
 
                     # Compute XYZ from the cached depth (no refetch)
                     xyz_vision, frame = pixel_to_xyz_from_depth_value(
@@ -373,8 +535,46 @@ def arm_object_grasp_with_centering(config):
                     print(f"[{which.upper()}] Click {click_xy} → 3D ({frame}): "
                           f"[{xyz_vision[0]:.3f}, {xyz_vision[1]:.3f}, {xyz_vision[2]:.3f}] m")
 
-                    # ---- Sequence using grasp profile ----
-                    move_seconds = 3.0   # increase to slow down further
+                    # ---- Decide: walk or grasp ----
+                    (x_g, y_g, z_g), _root = _vision_point_to_gab_xy(state_client, xyz_vision)
+                    dist_xy, _ = _planar_distance_and_heading(x_g, y_g)
+                    print(f"[Info] Planar distance to target (GAB XY): {dist_xy:.2f} m")
+                    # Hard-code or keep your existing threshold variable
+                    GRASP_RANGE_M = 0.75  # <-- set the distance you consider “close enough”
+
+                    if dist_xy > GRASP_RANGE_M:
+                        print(
+                            f"[Info] Farther than {GRASP_RANGE_M:.2f} m → walking closer (standoff {config.standoff:.2f} m)...")
+
+                        # 'vis_resp' must be the ImageResponse for the camera that was clicked
+                        cmd_id = walk_to_object_in_image(
+                            manip_client=manipulation_api_client,
+                            image_resp=vis_resp,  # <-- chosen camera's ImageResponse
+                            uv=click_xy,  # pixel in that camera
+                            standoff_m=float(config.standoff)
+                        )
+
+                        # Version-agnostic wait: proceed once we're no longer in a "walking" state
+                        walking_state_names = {
+                            "MANIP_STATE_WALKING_TO_OBJECT",
+                            "MANIP_STATE_WALKING_TO_OBJECT_GOING",
+                            "MANIP_STATE_WALKING_TO_OBJECT_APPROACH",
+                        }
+                        fb_req = manipulation_api_pb2.ManipulationApiFeedbackRequest(manipulation_cmd_id=cmd_id)
+                        while True:
+                            fb = manipulation_api_client.manipulation_api_feedback_command(fb_req)
+                            state_name = manipulation_api_pb2.ManipulationFeedbackState.Name(fb.current_state)
+                            print(f"[WalkTo] State: {state_name}")
+                            if state_name not in walking_state_names:
+                                break
+                            time.sleep(0.25)
+
+                        print("[Info] Walk complete. Re-opening cameras for a fresh click/3D.")
+                        # Go back to the top of the loop to get an updated click/3D
+                        continue
+
+                    # ---- Grasp sequence (hover → open → descend → close → lift) ----
+                    move_seconds = config.move_seconds
                     settle = 0.3
 
                     # 1) Hover above target by profile hover_offset
@@ -405,13 +605,13 @@ def arm_object_grasp_with_centering(config):
                     command_client.robot_command(
                         RobotCommandBuilder.claw_gripper_open_fraction_command(
                             open_fraction=float(grasp_profile["close_fraction"]),
-                            max_vel=0.6,
+                            max_vel=0.4,
                             max_torque=float(grasp_profile["close_torque"])
                         )
                     )
-                    time.sleep(1.2)
+                    time.sleep(2)
 
-                    # 5) Lift back up to at least the hover height (use max of hover/contact/lift)
+                    # 5) Lift back up to at least the hover height
                     lift_offset = max(grasp_profile["hover_offset"], 0.3)
                     move_hand_to_point_with_gravity_offset(
                         command_client, state_client, xyz_vision,
@@ -437,9 +637,10 @@ def main():
     parser.add_argument('--right-image-source', default='frontright_fisheye_image',
                         help='Right front visual stream.')
     # (Optional) deprecated single camera flag; if provided, use as left
-    parser.add_argument('-i', '--image-source', help='[Deprecated] Single camera source; used as left if provided.')
+    parser.add_argument('-i', '--image-source',
+                        help='[Deprecated] Single camera source; used as left if provided.')
 
-    # Depth sampling + default hover (may be overridden by profile)
+    # Depth sampling
     parser.add_argument('--depth-samples', type=int, default=3,
                         help='Number of depth frames to temporally median at the clicked pixel. 1 = no extra wait.')
 
@@ -448,6 +649,20 @@ def main():
                         help='Wrist roll about gravity-down (degrees). Try 0, 90, 180, 270.')
     parser.add_argument('--roll-base-axis', choices=['x', 'y'], default='x',
                         help='Zero-roll reference axis in the root frame (affects jaw direction).')
+
+    # Walk/gating parameters
+    parser.add_argument('--grasp-range', type=float, default=1.2,
+                        help='If target planar distance (GAB XY) is <= this, grasp directly; else, walk first.')
+    parser.add_argument('--standoff', type=float, default=0.6,
+                        help='Desired planar standoff distance from object after walking.')
+    parser.add_argument('--walk-seconds-per-meter', type=float, default=2.5,
+                        help='Heuristic pacing for walking trajectory time.')
+    parser.add_argument('--no-face-target', action='store_true',
+                        help="Don't rotate the base to face the target when walking.")
+
+    # Arm motion pacing
+    parser.add_argument('--move-seconds', type=float, default=3.0,
+                        help='Nominal time for each arm segment (higher = slower).')
 
     options = parser.parse_args()
 
