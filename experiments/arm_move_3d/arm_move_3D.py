@@ -86,7 +86,7 @@ def detect_non_gray_objects(img, camera_source, z_offset):
                             (cX + 10, cY + 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
 
-    return img
+    return img, X, Y
 
 
 def extend_arm_sequence(robot, command_client, robot_state_client, image_client):
@@ -201,10 +201,31 @@ def extend_arm_sequence(robot, command_client, robot_state_client, image_client)
                 img = cv2.imdecode(img, -1)
 
             # Non-gray object detection with intrinsics
-            img = detect_non_gray_objects(img, image.source, g_height_offset)
-
+            img, X, Y = detect_non_gray_objects(img, image.source, g_height_offset)
+            
+            # Display the image with detected object
             cv2.imshow(window_name, img)
             if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+            
+            # Move arm to detected object
+            if X is not None and Y is not None:
+                robot.logger.info(f"Detected object at pixel ({X:.2f}, {Y:.2f})")
+                # the arm is already pointed down, so we can just move it forward in te hand frame. X is forward, Y is left/right
+                adjusted_pose = SE3Pose(
+                    x=0.4, y=(Y - img.shape[1] / 2) * 0.001, z=(X - img.shape[0] / 2) * 0.001 + z_offset,
+                    rot=Quat()                    
+                )
+                se3_poses = [adjusted_pose.to_proto()]
+                ref_time = seconds_to_timestamp(time.time() + 0.5)
+                robot_cmd = RobotCommandBuilder.arm_cartesian_move_helper(
+                    se3_poses=se3_poses,
+                    times=[0.0],
+                    se3_velocities=[zero_vel.to_proto()],
+                    root_frame_name="hand", # "hand"
+                )
+                command_client.robot_command(robot_cmd)
+                time.sleep(15)
                 break
     cv2.destroyWindow(window_name)
 
