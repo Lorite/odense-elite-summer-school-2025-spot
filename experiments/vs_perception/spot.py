@@ -1,4 +1,5 @@
 import os
+import math
 
 import cv2 as cv
 import numpy as np
@@ -45,6 +46,36 @@ def calculate_camera_height(robot_state_transforms_snapshot, img_transforms_snap
         img_transforms_snapshot, 'body', 'hand_color_image_sensor')
     gpe_tform_camera = gpe_tform_body * body_tform_camera
     return gpe_tform_camera.z
+
+
+def translation_camera_to_gpe(translation_camera, robot_state_transforms_snapshot, img_transforms_snapshot):
+    gpe_tform_body = bosdyn.client.frame_helpers.get_a_tform_b(
+        robot_state_transforms_snapshot, 'gpe', 'body')
+    body_tform_camera = bosdyn.client.frame_helpers.get_a_tform_b(
+        img_transforms_snapshot, 'body', 'hand_color_image_sensor')
+    gpe_tform_camera = gpe_tform_body * body_tform_camera
+
+    return gpe_tform_camera.transform_point(translation_camera[0], translation_camera[1], translation_camera[2])
+
+
+def translation_gpe_to_flat_body(translation_gpe, robot_state_transforms_snapshot):
+    flat_body_tform_gpe = bosdyn.client.frame_helpers.get_a_tform_b(
+        robot_state_transforms_snapshot, 'flat_body', 'gpe')
+    return flat_body_tform_gpe.transform_point(translation_gpe[0], translation_gpe[1], translation_gpe[2])
+
+
+def get_camera_yaw(robot_state_transforms_snapshot, img_transforms_snapshot):
+    flat_body_T_body = bosdyn.client.frame_helpers.get_a_tform_b(
+        robot_state_transforms_snapshot, "flat_body", "body")
+    body_T_camera = bosdyn.client.frame_helpers.get_a_tform_b(
+        img_transforms_snapshot, "body", "hand_color_image_sensor")
+    flat_body_T_camera = flat_body_T_body * body_T_camera
+    rot = flat_body_T_camera.rotation.to_matrix()
+    x_axis = rot[:, 0]
+    x_proj = np.array([x_axis[0], x_axis[1]])
+    yaw = np.arctan2(x_proj[1], x_proj[0])
+    yaw += math.pi / 2
+    return yaw
 
 
 class Spot():

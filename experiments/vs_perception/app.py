@@ -6,8 +6,11 @@ import cv2 as cv
 import copy
 import numpy as np
 import time
+import math
+from multiprocessing import shared_memory
+import struct
 
-from spot import Spot, img_spot_to_opencv, calculate_camera_height
+from spot import Spot, img_spot_to_opencv, calculate_camera_height, translation_camera_to_gpe, translation_gpe_to_flat_body, get_camera_yaw
 import object_detection
 import object_pose_estimation
 
@@ -275,8 +278,6 @@ def value_changed():
 
     with gui_output_lock:
         gui_output = GUIOutput(val1, val2, val3)
-        print(
-            f"{gui_output.img_blur}, {gui_output.color_threshold}, {gui_output.mask_opening_radius}")
 
 
 update_gui()
@@ -285,40 +286,78 @@ update_gui()
 def perception():
     global gui_input
 
-    spot = Spot()
+    shm = shared_memory.SharedMemory(
+        create=True, size=32, name='shm_goal')
+    buffer = shm.buf
 
-    t = time.time()
-    while True:
-        img_spot = spot.get_spot_img()
-        img = img_spot_to_opencv(img_spot)
+    try:
 
-        camera_height = calculate_camera_height(
-            spot.get_robot_state_transforms_snapshot(), img_spot.shot.transforms_snapshot)
+        spot = Spot()
 
-        with gui_output_lock:
-            gui_output_copy = copy.deepcopy(gui_output)
+        t = time.time()
+        while True:
+            img_spot = spot.get_spot_img()
+            img = img_spot_to_opencv(img_spot)
 
-        detect_object_result = object_detection.detect_object(img,
-                                                              gui_output_copy.img_blur,
-                                                              gui_output_copy.color_threshold,
-                                                              gui_output_copy.mask_opening_radius)
+            robot_state_transforms_snapshot = spot.get_robot_state_transforms_snapshot()
+            img_transforms_snapshot = img_spot.shot.transforms_snapshot
 
-        pose = object_pose_estimation.get_translation_in_camera_frame(
-            detect_object_result.rect[0], camera_height) if detect_object_result.rect is not None else None
+            camera_height = calculate_camera_height(
+                robot_state_transforms_snapshot, img_transforms_snapshot)
 
-        t_now = time.time()
-        fps = 1.0 / (t_now - t)
-        t = t_now
+            with gui_output_lock:
+                gui_output_copy = copy.deepcopy(gui_output)
 
-        with gui_input_lock:
-            gui_input = GUIInput(img,
-                                 detect_object_result.img_pp,
-                                 detect_object_result.color_mask,
-                                 detect_object_result.mask_pp,
-                                 detect_object_result.largest_component_mask,
-                                 detect_object_result.rect,
-                                 pose,
-                                 fps)
+            detect_object_result = object_detection.detect_object(img,
+                                                                  gui_output_copy.img_blur,
+                                                                  gui_output_copy.color_threshold,
+                                                                  gui_output_copy.mask_opening_radius)
+            if detect_object_result.rect is not None:
+                translation_camera = object_pose_estimation.get_translation_in_camera_frame(
+                    detect_object_result.rect[0], camera_height)
+
+                translation_gpe = (translation_camera_to_gpe(
+                    translation_camera, robot_state_transforms_snapshot, img_transforms_snapshot))
+
+                translation_gpe = (translation_gpe[0], translation_gpe[1], 0)
+
+                translation_flat_body = translation_gpe_to_flat_body(
+                    translation_gpe, robot_state_transforms_snapshot)
+
+                camera_yaw = math.degrees(get_camera_yaw(
+                    robot_state_transforms_snapshot, img_transforms_snapshot))
+
+                object_yaw = detect_object_result.rect[2]
+                if detect_object_result.rect[1][0] < detect_object_result.rect[1][1]:
+                    object_yaw += 90
+                    if object_yaw > 90:
+                        object_yaw -= 180
+                object_yaw *= -1
+
+                yaw_goal = camera_yaw + object_yaw
+
+                buffer[:32] = struct.pack(
+                    'dddd', translation_flat_body[0], translation_flat_body[1], translation_flat_body[2], yaw_goal)
+
+            else:
+                translation_camera = None
+
+            t_now = time.time()
+            fps = 1.0 / (t_now - t)
+            t = t_now
+
+            with gui_input_lock:
+                gui_input = GUIInput(img,
+                                     detect_object_result.img_pp,
+                                     detect_object_result.color_mask,
+                                     detect_object_result.mask_pp,
+                                     detect_object_result.largest_component_mask,
+                                     detect_object_result.rect,
+                                     translation_camera,
+                                     fps)
+    finally:
+        shm.close()
+        shm.unlink()
 
 
 thread = threading.Thread(target=perception, daemon=True)
