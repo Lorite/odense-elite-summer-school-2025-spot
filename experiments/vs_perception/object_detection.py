@@ -96,7 +96,6 @@ def get_min_area_rect(mask):
 
 
 class DetectObjectResult():
-
     def __init__(self, img_pp, color_mask, mask_pp, largest_component_mask, rect):
         self.rect = rect
         self.img_pp = img_pp
