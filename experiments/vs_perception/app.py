@@ -110,7 +110,7 @@ def draw_rect(img, rect, color=(0, 0, 255), thickness=1):
 
 
 root = tk.Tk()
-root.title("Perception")
+root.title("VS Perception")
 
 default_font = font.nametofont("TkDefaultFont")
 default_font.configure(size=14)
