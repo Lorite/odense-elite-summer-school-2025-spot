@@ -120,15 +120,23 @@ def stand_extend_arm_then_sit(config):
         cmd_id = command_client.robot_command(
             RobotCommandBuilder.claw_gripper_open_fraction_command(gripper_open_fraction)
         )
-        time.sleep(10)  # hold for 10 seconds
+        time.sleep(5)  # hold for 5 seconds
 
         # Close gripper to 20% and hold for 10 seconds
-        gripper_open_fraction = 0.5
+        gripper_open_fraction = 0.05
         robot.logger.info(f"Closing gripper to {gripper_open_fraction*100:.0f}%...")
+        cmd_id = command_client.robot_command(
+            RobotCommandBuilder.claw_gripper_open_fraction_command(gripper_open_fraction, max_vel=0.5, max_torque=0.001, disable_force_on_contact=True)
+        )
+        time.sleep(10)  # hold for 5 seconds
+
+        # Open gripper fully (100%) and hold for 10 seconds
+        gripper_open_fraction = 1.0
+        robot.logger.info(f"Opening gripper to {gripper_open_fraction*100:.0f}%...")
         cmd_id = command_client.robot_command(
             RobotCommandBuilder.claw_gripper_open_fraction_command(gripper_open_fraction)
         )
-        time.sleep(10)  # hold for 10 seconds
+        time.sleep(5)  # hold for 5 seconds
 
         # Return arm to neutral and wrist facing forward
         robot.logger.info("Returning arm and wrist to neutral position...")
