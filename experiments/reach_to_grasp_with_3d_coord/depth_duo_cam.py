@@ -13,7 +13,7 @@ import bosdyn.client
 import bosdyn.client.estop
 import bosdyn.client.lease
 import bosdyn.client.util
-from bosdyn.api import estop_pb2, geometry_pb2, image_pb2, manipulation_api_pb2
+from bosdyn.api import estop_pb2, geometry_pb2, image_pb2, manipulation_api_pb2, basic_command_pb2
 from bosdyn.client.estop import EstopClient
 from bosdyn.client.frame_helpers import VISION_FRAME_NAME
 from bosdyn.client.image import ImageClient
@@ -430,7 +430,7 @@ GRASP_PROFILES = {
     # Standard box: moderate hover, standard contact, full close
     "B": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.4, "close_torque": 0.1},
     # Slim pen: hover modestly, contact very close, full close, but you may need lower torque
-    "P": {"name": "pen", "hover_offset": 0.20, "contact_offset": 0.008, "close_fraction": 0.0, "close_torque": 5.0},
+    "P": {"name": "pen", "hover_offset": 0.20, "contact_offset": 0.02, "close_fraction": 0.0, "close_torque": 5.0},
 }
 
 
@@ -498,6 +498,15 @@ def arm_object_grasp_with_centering(config):
 
         print("Standing...")
         blocking_stand(command_client, timeout_sec=10)
+        body_height = -0.30
+
+        mobility_params = RobotCommandBuilder.mobility_params(
+            body_height=body_height
+        )
+
+        stand_cmd = RobotCommandBuilder.synchro_stand_command(params=mobility_params)
+        command_client.robot_command(stand_cmd)
+        time.sleep(3.0)
 
         print("Click in either window (Front Left / Front Right). Press 'q' or 'Esc' to quit.")
         try:
@@ -605,11 +614,11 @@ def arm_object_grasp_with_centering(config):
                     command_client.robot_command(
                         RobotCommandBuilder.claw_gripper_open_fraction_command(
                             open_fraction=float(grasp_profile["close_fraction"]),
-                            max_vel=0.4,
+                            max_vel=0.6,
                             max_torque=float(grasp_profile["close_torque"])
                         )
                     )
-                    time.sleep(2)
+                    time.sleep(3)
 
                     # 5) Lift back up to at least the hover height
                     lift_offset = max(grasp_profile["hover_offset"], 0.3)
@@ -618,7 +627,16 @@ def arm_object_grasp_with_centering(config):
                         down_offset_m=lift_offset, seconds=move_seconds,
                         roll_deg=config.roll_deg, base_axis=config.roll_base_axis
                     )
-                    time.sleep(move_seconds + settle)
+                    time.sleep(6)
+
+                    command_client.robot_command(
+                        RobotCommandBuilder.claw_gripper_open_fraction_command(
+                            open_fraction=0.9,
+                            max_vel=0.6,
+                            max_torque=5
+                        )
+                    )
+                    time.sleep(3)
 
                 except Exception as e:
                     print(f"[Warn] Could not compute/move for click {click_xy} on {which} camera: {e}")
