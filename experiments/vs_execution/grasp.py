@@ -1,14 +1,16 @@
 import os
 import time
+import math
 
 import bosdyn.client
-from bosdyn.client import frame_helpers
+from bosdyn.client import frame_helpers, math_helpers
 from bosdyn.client import robot_command
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 
 from . import vs
 from experiments.experiments_helpers.object_properties import OBJECTS
+from bosdyn.api import geometry_pb2
 
 try:
     from dotenv import load_dotenv
@@ -83,6 +85,27 @@ def power_off():
     print('Robot safely powered off!')
 
 
+def grasp(duration_vs, x_off, y_off, z_off, yaw_off, ignore_obj_yaw, duration_ss, offset_ss, gripper_opening_fraction, gripper_max_vel, sleep_after_gripper, debug=False):
+    if debug:
+        input("Enter for grasping...")
+    print('Grasping...')
+    vs.vs(robot_state_client, command_client,
+          duration_vs, x_off, y_off, z_off, yaw_off, ignore_obj_yaw)
+    if debug:
+        input('Enter to continue...')
+    vs.vs_single_shot(robot_state_client, command_client,
+                      duration_ss, offset_ss, x_off, y_off, z_off, yaw_off, ignore_obj_yaw)
+    if debug:
+        input('Enter to continue...')
+    cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(
+        gripper_opening_fraction, max_vel=gripper_max_vel, disable_force_on_contact=True, max_torque=0.5)
+    command_client.robot_command(cmd)
+    time.sleep(sleep_after_gripper)
+    print("Grasp done!")
+    if debug:
+        input('Enter to continue...')
+
+
 if __name__ == '__main__':
 
     ROBOT_IP = os.getenv("ROBOT_IP")
@@ -104,22 +127,59 @@ if __name__ == '__main__':
         bosdyn.client.lease.LeaseClient.default_service_name)
 
     with bosdyn.client.lease.LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True):
+
+        debug = False
+        i = input('Grasp: p c cs cd t? ')
+
         setup_robot()
-        input('Enter to grasp...')
-        print('Grasping...')
 
-        # Select object preset from env var; default to cup_upright
-        object_name = os.getenv('OBJECT_NAME', 'cup_upright')
-        props = OBJECTS.get(object_name, OBJECTS['cup_upright'])
-        print(f"Using object preset: {object_name} -> {props}")
+        if i == 'p':  # pen
+            theta = math.radians(25) / 2
+            offset_ss_Q = geometry_pb2.Quaternion(
+                w=math.cos(theta), x=math.sin(theta), y=0, z=0)
+            offset_ss = math_helpers.SE3Pose(x=0, y=0, z=0.075,
+                                             rot=offset_ss_Q)
+            grasp(2, 0, -0.01, 0.2, 0, False, 1.5,
+                  offset_ss, 0.05, 3.0, 1, debug)
 
-        vs.vs(robot_state_client, command_client,
-              10, 0, 0, props.grasp_dist, 0, False)
+        if i == 'c':  # cup
+            theta = math.radians(13) / 2
+            offset_ss_Q = geometry_pb2.Quaternion(
+                w=math.cos(theta), x=math.sin(theta), y=0, z=0)
+            offset_ss = math_helpers.SE3Pose(x=-0.02, y=0, z=0.2,
+                                             rot=offset_ss_Q)
+            grasp(2, 0, 0.065, 0.4, 0, True, 3.5,
+                  offset_ss, 0.05, 3.0, 1, debug)
 
-        input("a")
+        if i == 'cs':   # cup side
+            theta = math.radians(-5) / 2
+            offset_ss_Q = geometry_pb2.Quaternion(
+                w=math.cos(theta), x=math.sin(theta), y=0, z=0)
+            offset_ss = math_helpers.SE3Pose(x=0, y=0, z=0.275,
+                                             rot=offset_ss_Q)
+            grasp(2, 0, 0, 0.4, 0, False, 3.5, offset_ss, 0.55, 0.5, 2, debug)
 
-        grasp(props.dist_to_floor, props.gripper_open_fraction,
-              props.gripper_max_vel)
-        print('Grasping done')
+        if i == 'cd':   # cup down
+            theta = math.radians(-5) / 2
+            offset_ss_Q = geometry_pb2.Quaternion(
+                w=math.cos(theta), x=math.sin(theta), y=0, z=0)
+            offset_ss = math_helpers.SE3Pose(x=0, y=0, z=0.223,
+                                             rot=offset_ss_Q)
+            grasp(1.5, 0, -0.01, 0.4, 0, True, 2,
+                  offset_ss, 0.5, 0.5, 2, debug)
+
+        if i == 't':  # transparent
+            theta = math.radians(0) / 2
+            offset_ss_Q = geometry_pb2.Quaternion(
+                w=math.cos(theta), x=math.sin(theta), y=0, z=0)
+            offset_ss = math_helpers.SE3Pose(x=0, y=0, z=0.275,
+                                             rot=offset_ss_Q)
+            grasp(2, 0.01, 0, 0.4, 0, True, 2,
+                  offset_ss, 0.35, 0.5, 2.5, debug)
+
         carry()
+        time.sleep(2)
+        cmd = RobotCommandBuilder.claw_gripper_open_fraction_command(
+            1, max_vel=1, disable_force_on_contact=True, max_torque=0.5)
+        command_client.robot_command(cmd)
         power_off()

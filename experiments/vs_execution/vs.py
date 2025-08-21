@@ -77,7 +77,7 @@ def arm_pose_cmd_flat_body_T_yaw_camera(transforms_snapshot, x, y, z, yaw, durat
 
 def vs_init_arm_gripper_pose_cmd(robot_transforms_snapshot, duration=1, x=0.75, y=0, z=0.25, yaw=0):
     """
-    Robot command to bring arm/gripper in valid initial position for visual servoing 
+    Robot command to bring arm/gripper in valid initial position for visual servoing
     (camera looking straight down, gripper open).
 
     Args:
@@ -100,7 +100,7 @@ def vs_init_arm_gripper_pose_cmd(robot_transforms_snapshot, duration=1, x=0.75, 
 
 def vs(state_client, command_client, duration, x_off=0, y_off=0, z_off=0.2, yaw_off=0, ignore_obj_yaw=False):
     """
-    Visual Servoing. Uses perception output to move endeffector to predefined pose to the object (with 
+    Visual Servoing. Uses perception output to move endeffector to predefined pose to the object (with
     camera looking straight down). Assumes that camera is initally looking straigt down with object in
     frame and detected by running perception.
 
@@ -134,5 +134,25 @@ def vs(state_client, command_client, duration, x_off=0, y_off=0, z_off=0.2, yaw_
         cmd_id = command_client.robot_command(cmd)
 
         t_now = time.time()
+
+    robot_command.block_until_arm_arrives(command_client, cmd_id)
+
+
+def vs_single_shot(state_client, command_client, duration, offset_2, x_off=0, y_off=0, z_off=0.2, yaw_off=0, ignore_obj_yaw=False):
+    with open(MMAP_FILENAME, 'r+b') as f:
+        shm = mmap.mmap(f.fileno(), MMAP_SIZE, access=mmap.ACCESS_READ)
+
+    offset = T_yaw(x_off, y_off, z_off, -yaw_off)
+    offset = offset.inverse() * offset_2
+
+    x, y, z, yaw = struct.unpack('dddd', shm[:32])
+    if ignore_obj_yaw:
+        yaw = 0
+
+    transforms_snapshot = state_client.get_robot_state(
+    ).kinematic_state.transforms_snapshot
+    cmd = arm_pose_cmd_flat_body_T_yaw_camera(
+        transforms_snapshot, x, y, z, yaw, duration, offset)
+    cmd_id = command_client.robot_command(cmd)
 
     robot_command.block_until_arm_arrives(command_client, cmd_id)
