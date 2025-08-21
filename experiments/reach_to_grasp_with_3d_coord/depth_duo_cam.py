@@ -426,9 +426,13 @@ def clustered_depth_at_uv_window(image_client, depth_source, u, v,
 # --------------------------
 GRASP_PROFILES = {
     # Hover safely higher, close gently (leave some opening)
-    "C": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.03, "close_fraction": 0.5, "close_torque": 0.01},
+    "CS": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.03, "close_fraction": 0.5, "close_torque": 0.01},
+    "CH": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.01, "close_fraction": 0.4, "close_torque": 0.01},
+    "CV": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.01, "close_fraction": 0.6, "close_torque": 0.01},
+    "CR": {"name": "cup", "hover_offset": 0.30, "contact_offset": 0.02, "close_fraction": 0.4, "close_torque": 0.01},
     # Standard box: moderate hover, standard contact, full close
-    "B": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.4, "close_torque": 0.1},
+    "BH": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.35, "close_torque": 0.1},
+    "BT": {"name": "box", "hover_offset": 0.25, "contact_offset": 0.02, "close_fraction": 0.42, "close_torque": 0.1},
     # Slim pen: hover modestly, contact very close, full close, but you may need lower torque
     "P": {"name": "pen", "hover_offset": 0.20, "contact_offset": 0.02, "close_fraction": 0.0, "close_torque": 5.0},
 }
@@ -436,7 +440,7 @@ GRASP_PROFILES = {
 
 def ask_object_profile():
     """Prompt the user to choose C/B/P; keep asking until valid."""
-    prompt = "Object to grasp? [C=cup, B=box, P=pen]: "
+    prompt = "Object to grasp? [CS, CH, CV, CR=cup(stand, hori, vert, revert), BH, BT=box(hori, tilt), P=pen]: "
     while True:
         choice = input(prompt).strip().upper()
         if choice in GRASP_PROFILES:
@@ -498,12 +502,9 @@ def arm_object_grasp_with_centering(config):
 
         print("Standing...")
         blocking_stand(command_client, timeout_sec=10)
+
         body_height = -0.30
-
-        mobility_params = RobotCommandBuilder.mobility_params(
-            body_height=body_height
-        )
-
+        mobility_params = RobotCommandBuilder.mobility_params(body_height=body_height)
         stand_cmd = RobotCommandBuilder.synchro_stand_command(params=mobility_params)
         command_client.robot_command(stand_cmd)
         time.sleep(3.0)
