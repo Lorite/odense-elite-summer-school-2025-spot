@@ -59,6 +59,10 @@ def perception(stop_event, get_params_callback, update_out_callback):
 
                 robot_state_transforms_snapshot = robot.get_robot_state_transforms_snapshot()
                 img_transforms_snapshot = img_spot.shot.transforms_snapshot
+                if not spot.transforms_snapshot_valid(img_transforms_snapshot):
+                    print("Image transforms snapshot not valid - skipping frame")
+                    continue
+
                 gpe_tform_camera = spot.gpe_tform_camera(
                     robot_state_transforms_snapshot, img_transforms_snapshot)
                 camera_height = spot.camera_height(gpe_tform_camera)

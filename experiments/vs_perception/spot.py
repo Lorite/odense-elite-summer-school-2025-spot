@@ -77,6 +77,15 @@ def flat_body_yaw_camera(robot_state_transforms_snapshot, img_transforms_snapsho
     return yaw
 
 
+def transforms_snapshot_valid(transforms_snapshot):
+    try:
+        bosdyn.client.frame_helpers.validate_frame_tree_snapshot(
+            transforms_snapshot)
+        return True
+    except:
+        return False
+
+
 class Spot():
 
     def __init__(self):
