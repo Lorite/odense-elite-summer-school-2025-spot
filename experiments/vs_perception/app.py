@@ -6,7 +6,7 @@ import cv2 as cv
 import copy
 import numpy as np
 
-import perception
+from . import perception
 
 W_IMG_0 = 700
 W_IMG_1_TO_4 = 300
@@ -110,7 +110,7 @@ def draw_rect(img, rect, color=(0, 0, 255), thickness=1):
 
 
 root = tk.Tk()
-root.title("Perception")
+root.title("VS Perception")
 
 default_font = font.nametofont("TkDefaultFont")
 default_font.configure(size=14)

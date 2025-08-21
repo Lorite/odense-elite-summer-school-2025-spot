@@ -3,10 +3,10 @@ import tempfile
 import struct
 import mmap
 
-import util
-import spot
-import object_detection
-import object_pose_estimation
+from . import util
+from . import spot
+from . import object_detection
+from . import object_pose_estimation
 
 
 ROLLING_MEDIAN_NUM_VALUES = 5
